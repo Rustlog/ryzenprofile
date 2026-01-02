@@ -24,7 +24,7 @@
 #   - Automatically apply profile on AC<->BAT or manual switch
 #   - Manually Switch profile 'ryzenprofile -s -p powersave'
 #   - Summary of installed profiles 'ryzenprofile -l'
-#   - Live active and unmanaged workers 'ryzenprofile --show'
+#   - Live active and unmanaged workers 'ryzenprofile --status'
 #
 # @Author: Rustlog
 # @Github: https://github.com/Rustlog/ryzenprofile
@@ -44,14 +44,14 @@ LICENSE="GPLv3"
 readonly VERSION AUTHOR REMOTE_REPO LICENSE
 
 # Global readonly defaults
-SCRIPT_NAME="${0##*/}" \
-D_CONFIG_DIR="/etc/${SCRIPT_NAME,,}" \
+PROGRAM_NAME="${0##*/}" \
+D_CONFIG_DIR="/etc/${PROGRAM_NAME,,}" \
 D_PROFILES_DIR="${D_CONFIG_DIR}/profiles" \
 F_CONFIG_FILE="${D_CONFIG_DIR}/config" \
 F_CURRENT_POWER_PROFILE="${D_CONFIG_DIR}/power_profile" \
 F_STOCK_LIMITS="${D_CONFIG_DIR}/stock_limits"
 
-readonly SCRIPT_NAME D_CONFIG_DIR \
+readonly PROGRAM_NAME D_CONFIG_DIR \
     D_PROFILES_DIR F_CONFIG_FILE \
     F_CURRENT_POWER_PROFILE F_STOCK_LIMITS
 
@@ -103,7 +103,7 @@ function log() {
 # General overview of this script functionality
 function Usage() {
     printf '%b\n' \
-        "Usage: ${SCRIPT_NAME} [OPTIONS]" \
+        "Usage: ${PROGRAM_NAME} [OPTIONS]" \
         "" \
         "Desc: Create, update, and manage init (${INIT_SYSTEM}) service that applies a Ryzen power profile at boot" \
         "      using ryzenadj (AMD CPU only)." \
@@ -119,7 +119,7 @@ function Usage() {
         "  -g, --generate-profiles   Generate all profiles defined in CONFIG: '${F_CONFIG_FILE}'" \
         "                            -> generated profiles written to '${D_PROFILES_DIR}/*'" \
         "                               (Will use live or cached stock limits)" \
-        "  -n, --service-name=NAME   Service name (default: '${SCRIPT_NAME}')" \
+        "  -n, --service-name=NAME   Service name (default: '${PROGRAM_NAME}')" \
         "  -s, --set                 Set a profile in (${F_CONFIG_FILE}), conjunction with -p" \
         "  -p, --profile=PROFILE     Predefined profile for ${INIT_SYSTEM} system (default: balanced):" \
         "                             extreme_save, ultra_save, powersave, eco," \
@@ -131,11 +131,11 @@ function Usage() {
         "  -h, --help                Show this help message" \
         "" \
         "Examples:" \
-        "  ${SCRIPT_NAME} -s -p performance                    # Set profile to 'performance'" \
-        "  ${SCRIPT_NAME} --init --install                     # Install and configure in one command" \
-        "  ${SCRIPT_NAME} -u                                   # Uninstall service" \
+        "  ${PROGRAM_NAME} -s -p performance                    # Set profile to 'performance'" \
+        "  ${PROGRAM_NAME} --init --install                     # Install and configure in one command" \
+        "  ${PROGRAM_NAME} -u                                   # Uninstall service" \
         "  # Set additional ryzenadj args for profile 'performance'" \
-        "  ${SCRIPT_NAME} -s -p performance  --custom-args=\"--max-performance\"" \
+        "  ${PROGRAM_NAME} -s -p performance  --custom-args=\"--max-performance\"" \
         "" \
         "Available profiles (under '${D_PROFILES_DIR}/*'):" \
         "   $(ListAvailableProfiles)" \
@@ -668,7 +668,7 @@ function WriteDefaultConfig() {
 CURRENT_PROFILE="\$(cat "${F_CURRENT_POWER_PROFILE}" 2> /dev/null || true)"
 
 # Init Service name
-SERVICE_NAME="${SCRIPT_NAME}"
+SERVICE_NAME="${PROGRAM_NAME}"
 
 # Available profiles
 PROFILES=(
@@ -688,7 +688,7 @@ PROFILES=(
 # You can copy one of the generated profile
 # save it with different name (e.g. ${D_PROFILES_DIR}/custom_profile)
 # then change the values (nvim ${D_PROFILES_DIR}/custom_profile)
-# apply your config using (${SCRIPT_NAME} -set -profile custom_profile)
+# apply your config using (${PROGRAM_NAME} -set -profile custom_profile)
 
 EOF
     return 0
@@ -747,7 +747,7 @@ function SetCustomArgsInProfile() {
 
 # Install systemd service
 function InstallSystemdService() {
-    local script_path="/usr/local/bin/${SCRIPT_NAME}"
+    local script_path="/usr/local/bin/${PROGRAM_NAME}"
     local service_file="${SERVICE_DIR}/${SERVICE_NAME}.service"
 
     # Install a separate script (Daemon)
@@ -884,7 +884,7 @@ function InstallService() {
             bash -c "while [[ ! -p \"/etc/sv/${SERVICE_NAME}/supervise/ok\" ]]; do :;done"
         if sudo sv start "${SERVICE_NAME}"; then
             log info "Started ${INIT_SYSTEM} service '${SERVICE_NAME}'"
-            log ex_info "Check if profile is applied: use '${SCRIPT_NAME} --status'" \
+            log ex_info "Check if profile is applied: use '${PROGRAM_NAME} --status'" \
                 "or use 'sudo ryzenadj --info' verbose info"
         else
             log error "Failed to start ${INIT_SYSTEM} service '${SERVICE_NAME}'"
@@ -1066,7 +1066,7 @@ function main() {
     if command -v "systemctl" &> /dev/null; then
         INIT_SYSTEM="systemd"
         SERVICE_DIR="/etc/systemd/system"
-        POSIX_SCRIPT="/usr/local/bin/${SCRIPT_NAME}"
+        POSIX_SCRIPT="/usr/local/bin/${PROGRAM_NAME}"
     elif command -v "runit" &> /dev/null; then
         INIT_SYSTEM="runit"
         SERVICE_DIR="/etc/sv"
@@ -1094,7 +1094,7 @@ function main() {
     require_file "${F_CONFIG_FILE:-}" || WriteDefaultConfig
 
     # Fallback service name if no SERVICE_NAME found in config
-    require_var "${SERVICE_NAME:-}" || SERVICE_NAME="${SCRIPT_NAME}"
+    require_var "${SERVICE_NAME:-}" || SERVICE_NAME="${PROGRAM_NAME}"
 
     # Write a current profile
     require_file "${F_CURRENT_POWER_PROFILE:-}" || WriteCurrentProfile
