@@ -62,24 +62,38 @@ SERVICE_DIR=""
 SERVICE_NAME=""
 POSIX_SCRIPT=""
 INIT_SYSTEM=""
-VERBOSE=0
+LOGLEVEL=2
 NO_COLOR=1
 
 # Pretty logger
 function log() {
     local _type="${1}"; shift
     local _color="" _t="" _exit_code=0
-    if [[ $NO_COLOR -eq 0 ]] && [[ -t 1 ]]; then
-        local -g _info_color="\033[38;2;85;255;126m" \
-            _warn_color="\033[38;2;255;170;10m" \
-            _error_color="\033[38;2;244;29;31m" \
-            _fatal_color="\033[5m\033[38;2;255;0;0m" \
-            _other_color="\033[38;2;251;255;208m" \
-            _nc="\033[0m"
-    else
-        _info_color="" _warn_color="" _error_color=""
+    local default_loglevel=2 severity=0
+    local _info_color="" _warn_color="" _error_color="" \
         _fatal_color="" _other_color="" _nc=""
+
+    local -A loglevel=(
+        [error]=1
+        [warn]=1
+        [fatal]=1
+        [cmd_error]=1
+        [info]=2
+        [cmd_info]=2
+        [_info]=3
+        [debug]=3
+    )
+
+    severity="${loglevel[$_type]:-${default_loglevel}}"
+
+    (( LOGLEVEL >= severity )) || return 0
+
+    if [[ "$NO_COLOR" -eq 0 ]]; then
+        _info_color="\033[38;2;85;255;126m" _warn_color="\033[38;2;255;170;10m" \
+        _error_color="\033[38;2;244;29;31m" _fatal_color="\033[5m\033[38;2;255;0;0m" \
+        _other_color="\033[38;2;251;255;208m" _nc="\033[0m"
     fi
+
     case "${_type}" in
         info) _color="${_info_color:-}" _t="*"                ;;
         warn) _color="${_warn_color:-}" _t="^"                ;;
@@ -88,15 +102,8 @@ function log() {
         *) _color="${_other_color-""}" _t=""                  ;;
     esac
 
-    if [[ "${_type}" =~ ^(warn|ex_info)$ ]]; then
-        [[ $VERBOSE -eq 1 ]] && \
-            printf "[%b%s%b%s]: %s: %b\n" \
-                "${_color}" "${_type}" "${_nc}" "${_t}" "${FUNCNAME[1]}()" "${*}"
-        return $_exit_code
-    fi
-
-    printf "[%b%s%b%s]: %s: %b\n" \
-        "${_color}" "${_type}" "${_nc}" "${_t}" "${FUNCNAME[1]}()" "${*}"
+    printf "[%b%s%b%s]: %b\n" \
+        "${_color}" "${_type}" "${_nc}" "${_t}" "${*}"
     return $_exit_code
 }
 
@@ -182,7 +189,7 @@ function create_dir() {
     if ! require_dir "${dir}"; then
         log warn "${name} '${dir}' does not exist"
         if sudo mkdir -p "${dir}"; then
-            log ex_info "Successully created '${dir}'"
+            log _info "Successully created '${dir}'"
         else
             log error "Failed to create '${dir}'"
         fi
@@ -211,18 +218,18 @@ function ShowInfo() {
 # or install dest file with mode and perms
 function Install() {
     local f_src_file="${1:-}" f_dest_file="${2:-}"
-    local owners="${3:-root:root}" mode="${4:-644}"
+    local owners="${3:-root:root}" mode="${4:-0644}"
     local info_msg="${5:-}"
     require_var "${f_dest_file}" error \
         "Cannot procceed to install 'f_dest_file' var is empty"
     sudo mkdir -p "${f_dest_file%/*}"
     [[ ! -f "${f_dest_file}" ]] && sudo touch "${f_dest_file}"
     [[ -n "${f_src_file}" ]] && sudo mv "${f_src_file}" "${f_dest_file}"
-    if ! sudo chown "${owners}" "${f_dest_file}" && \
-        sudo chmod "${mode}" "${f_dest_file}"; then
+    if ! (sudo chown "${owners}" "${f_dest_file}" && \
+        sudo chmod "${mode}" "${f_dest_file}"); then
         return 1
     fi
-    [[ -n "${info_msg}" ]] && { log ex_info "${info_msg}"; return 0; }
+    [[ -n "${info_msg}" ]] && { log _info "${info_msg}"; return 0; }
     return 0
 }
 
@@ -240,10 +247,10 @@ function CheckDeps() {
 # Install POSIX daemon script
 function InstallPosixScript() {
     local install_path="${1}"
-    local mode="${3:-0755}"
+    local mode="${2:-0755}"
 
     # Install daemon script - NOW
-    Install "" "${install_path}" "root:root" "${mode}" \
+    Install "" "${install_path}" root:root "${mode}" \
         "Successfully installed script '(${install_path})'" || \
             log error "Failed to install script ('${install_path}')"
 
@@ -516,27 +523,27 @@ function GenerateRyzenProfiles() {
         log error "PROFILES array is missing from config file: '${F_CONFIG_FILE}'"
     if [[ ! -s "${F_STOCK_LIMITS}" ]]; then
         log info "Capturing real OEM power limits (only once)'"
-        log ex_info "Capturing real OEM power limits in '${F_STOCK_LIMITS}'"
+        log _info "Capturing real OEM power limits in '${F_STOCK_LIMITS}'"
         tmp="$(GenProfile 100 1)"
         tmp_file="$(mktemp)"
         printf '%s\n' "${tmp}" 1> "${tmp_file}"
-        if ! Install "${tmp_file}" "${F_STOCK_LIMITS}" "root:root" "644" ""; then
+        if ! Install "${tmp_file}" "${F_STOCK_LIMITS}" root:root 0640; then
             log error "Failed to capture real OEM poewr limits (${F_STOCK_LIMITS})" || true
             log error "Cannot proceed further"
             return 1
         fi
         log info "Stock limits saved to '${F_STOCK_LIMITS}'"
     fi
-    log ex_info "Generating profiles from your config '${F_CONFIG_FILE}'"
+    log _info "Generating profiles from your config '${F_CONFIG_FILE}'"
     for ((i=0;i<"${#PROFILES[@]}";i++)); do
         profile_name="${PROFILES[$i]}"
         percent="${PROFILES[$((i+1))]}"
-        [[ $VERBOSE -eq 1 ]] && printf '    %s\n' \
-            "Installing profile: '${D_PROFILES_DIR}/${profile_name}' with '${percent}%' of stock limits"
+        [[ "$LOGLEVEL" -ge 3 ]] && printf '    %-30s: %s\n' \
+            "generating (${profile_name})" "'${D_PROFILES_DIR}/${profile_name}' with '${percent}%' of stock limits"
         tmp="$(GenProfile "${percent}" 0)"
         tmp_file="$(mktemp)"
         printf '%s\n' "${tmp}" 1> "${tmp_file}"
-        Install "${tmp_file}" "${D_PROFILES_DIR}/${profile_name}" "root:root" "644" "" || \
+        Install "${tmp_file}" "${D_PROFILES_DIR}/${profile_name}" root:root 0640 || \
             log error "Failed to install profile '${D_PROFILES_DIR}/${profile_name}'"
         i=$((i+1))
     done
@@ -655,7 +662,7 @@ function WriteDefaultConfig() {
     require_var "${POWER_PROFILE}" error "Power profile not set"
 
     # Write default config
-    if ! Install "" "${F_CONFIG_FILE}" "root:root" "0644" \
+    if ! Install "" "${F_CONFIG_FILE}" root:root 0644 \
         "Default config created ('${F_CONFIG_FILE}')"; then
         log error "Failed create config ('${F_CONFIG_FILE}')"
     fi
@@ -700,7 +707,7 @@ function WriteCurrentProfile() {
     log warn "Current profile does not exist ('${F_CURRENT_POWER_PROFILE}')"
 
     # Install file
-    if ! Install "" "${F_CURRENT_POWER_PROFILE}" "root:root" "0644" ""; then
+    if ! Install "" "${F_CURRENT_POWER_PROFILE}" root:root 0644; then
         log error "Failed to create '${F_CURRENT_POWER_PROFILE}'"
     fi
 
@@ -712,7 +719,7 @@ function WriteCurrentProfile() {
 CURRENT_PROFILE="${POWER_PROFILE}"
 
 EOF
-    log ex_info \
+    log _info \
         "Successully created '${F_CURRENT_POWER_PROFILE}' with default power profile '(${POWER_PROFILE})'"
 }
 
@@ -754,7 +761,7 @@ function InstallSystemdService() {
     InstallPosixScript "${script_path}"
 
     # Install systemd service
-    Install "" "${service_file}" "root:root" "0644" \
+    Install "" "${service_file}" root:root 0644 \
         "Systemd service '${service_file}' installed" || \
         log error "Failed to install systemd service (${service_file})"
 
@@ -791,7 +798,7 @@ function InstallRunitService() {
             log info "Installed Runit service '${run_service}'"
 
     # Install a runit's log service
-    Install "" "${log_service}" "root:root" "0755" \
+    Install "" "${log_service}" root:root 0755 \
         "Installed runit log service '${log_service}'" || \
             log error "Failed to install ${INIT_SYSTEM} log service"
 
@@ -884,8 +891,8 @@ function InstallService() {
             bash -c "while [[ ! -p \"/etc/sv/${SERVICE_NAME}/supervise/ok\" ]]; do :;done"
         if sudo sv start "${SERVICE_NAME}"; then
             log info "Started ${INIT_SYSTEM} service '${SERVICE_NAME}'"
-            log ex_info "Check if profile is applied: use '${PROGRAM_NAME} --status'" \
-                "or use 'sudo ryzenadj --info' verbose info"
+            log _info "Check if profile is applied: use '${PROGRAM_NAME} --status'" \
+                "or use 'sudo ryzenadj --info' for detailed stats"
         else
             log error "Failed to start ${INIT_SYSTEM} service '${SERVICE_NAME}'"
         fi
@@ -999,7 +1006,7 @@ function main() {
     local -i uninstall=0 install=0 check_service=0 set_enabled=0 \
         should_list_profiles=0 apply_profile=0 show_usage=0 \
             show_status=0 kill_stale_processes=0 gen_profiles=0 \
-                should_init=0 verbose=0 override_no_color=0 \
+                should_init=0 override_no_color=0 \
                     override_color=0 p=0 a=0
 
     local ryzenadj_path_override="" custom_args=""
@@ -1040,7 +1047,8 @@ function main() {
             --license)          ShowInfo license; return 0                  ;;
             --repo)             ShowInfo repo; return 0                     ;;
             --about)            ShowInfo about; return 0                    ;;
-            -V|--verbose)        verbose=1                                  ;;
+            -V|--verbose)       LOGLEVEL=3                                  ;;
+            --loglevel)         LOGLEVEL="${value}"                         ;;
             *) log error "Unknown option: '${arg}', use --help to see options" ;;
         esac
     done
@@ -1060,7 +1068,6 @@ function main() {
     require_var "${service_name_override}" && SERVICE_NAME="${service_name_override}"
     is_flag_enabled "$override_no_color" && NO_COLOR=1
     is_flag_enabled "$override_color" && NO_COLOR=0
-    is_flag_enabled "$verbose" && VERBOSE=1
 
     # Init system detection
     if command -v "systemctl" &> /dev/null; then
