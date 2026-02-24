@@ -58,8 +58,9 @@ readonly PROGRAM_NAME D_CONFIG_DIR \
 # global mutable vars
 RYZENADJ_PATH="$(command -v ryzenadj)"
 POWER_PROFILE="balanced"
+WORKER_NAME="RyzenProfile"
+SERVICE_NAME="ryzenprofile"
 SERVICE_DIR=""
-SERVICE_NAME=""
 POSIX_SCRIPT=""
 INIT_SYSTEM=""
 LOGLEVEL=2
@@ -127,6 +128,7 @@ function Usage() {
         "                            -> generated profiles written to '${D_PROFILES_DIR}/*'" \
         "                               (Will use live or cached stock limits)" \
         "  -n, --service-name=NAME   Service name (default: '${PROGRAM_NAME}')" \
+        "  -w, --worker-name=NAME    New worker instances name (default: 'RyzenProfile')" \
         "  -s, --set                 Set a profile in (${F_CONFIG_FILE}), conjunction with -p" \
         "  -p, --profile=PROFILE     Predefined profile for ${INIT_SYSTEM} system (default: balanced):" \
         "                             extreme_save, ultra_save, powersave, eco," \
@@ -593,23 +595,23 @@ function ShowActive() {
     local -a pid_arr=()
 
     ps_pid() {
-        pgrep -d, -f ".\/${SERVICE_NAME} \(.*\)" 2> /dev/null || \
-        printf '%s\n' "no_pid"
+        pgrep -d, -f ".\/${WORKER_NAME} \(.*\)" 2> /dev/null || \
+            printf '%s\n' "no_pid"
     }
 
     pids="$(ps_pid)"
 
     [[ "${pids[0]}" == "no_pid" ]] && \
-        log error "Daemon script not running '${POSIX_SCRIPT}'"
+        log error "daemon not running '${POSIX_SCRIPT}'"
 
     IFS=',' read -r -a pid_arr <<< "${pids}" || true
 
     printf '%s\n' \
-        "Running process (from 'grep -ao ${SERVICE_NAME} (.*) /proc/{$(ps_pid)}/cmdline'):"
+        "Running process (from 'grep -ao ${WORKER_NAME} (.*) /proc/{$(ps_pid)}/cmdline'):"
 
     for pid in "${pid_arr[@]}"; do
         profile_cmd_string="$( \
-            grep -ao "${SERVICE_NAME} (.*)" /proc/"${pid}"/cmdline 2> /dev/null || true)"
+            grep -ao "${WORKER_NAME} (.*)" /proc/"${pid}"/cmdline 2> /dev/null || true)"
         if [[ "$(cut -d' ' -f4 /proc/"${pid}"/stat)" != "1" ]]; then
             profile_cmd_string="'${profile_cmd_string}' [active (managed by '${POSIX_SCRIPT}')]"
         else
@@ -628,7 +630,7 @@ function KillStaleProcesses() {
     local -a pid_arr=()
 
     ps_pid() {
-        pgrep -d, -f ".\/${SERVICE_NAME} \(.*\)" 2> /dev/null || \
+        pgrep -d, -f ".\/${WORKER_NAME} \(.*\)" 2> /dev/null || \
         printf '%s\n' "no_pid"
     }
 
@@ -675,7 +677,10 @@ function WriteDefaultConfig() {
 CURRENT_PROFILE="\$(cat "${F_CURRENT_POWER_PROFILE}" 2> /dev/null || true)"
 
 # Init Service name
-SERVICE_NAME="${PROGRAM_NAME}"
+SERVICE_NAME="${SERVICE_NAME:-${PROGRAM_NAME}}"
+
+# Worker name
+WORKER_NAME="RyzenProfile"
 
 # Available profiles
 PROFILES=(
@@ -754,16 +759,15 @@ function SetCustomArgsInProfile() {
 
 # Install systemd service
 function InstallSystemdService() {
-    local script_path="/usr/local/bin/${PROGRAM_NAME}"
     local service_file="${SERVICE_DIR}/${SERVICE_NAME}.service"
 
     # Install a separate script (Daemon)
-    InstallPosixScript "${script_path}"
+    InstallPosixScript "${POSIX_SCRIPT}"
 
     # Install systemd service
     Install "" "${service_file}" root:root 0644 \
-        "Systemd service '${service_file}' installed" || \
-        log error "Failed to install systemd service (${service_file})"
+        "Installed ${INIT_SYSTEM} service '${service_file}'" || \
+            log error "Failed to install ${INIT_SYSTEM} service '${service_file}'"
 
     # Fill with content
     sudo tee "${service_file}" &>/dev/null << EOF
@@ -773,7 +777,7 @@ After=multi-user.target
 
 [Service]
 Type=simple
-ExecStart=${script_path}
+ExecStart=${POSIX_SCRIPT}
 Restart=on-failure
 RestartSec=1
 StartLimitIntervalSec=60
@@ -790,17 +794,26 @@ function InstallRunitService() {
     local log_service="${SERVICE_DIR}/${SERVICE_NAME}/log/run"
 
     # Install POSIX script as runit service
-    InstallPosixScript "${run_service}"
+    InstallPosixScript "${POSIX_SCRIPT}"
 
-    # Post install check - validate installation
+sudo tee "${run_service}" &>/dev/null <<EOF
+#!/bin/sh
+
+exec 2>&1
+
+exec chpst -b "${SERVICE_NAME}" ${POSIX_SCRIPT}
+
+EOF
+
+    # Post install check - validate service installation
     require_file "${run_service}" error \
-        "Failed to install runit service (${run_service})" && \
-            log info "Installed Runit service '${run_service}'"
+        "Failed to install ${INIT_SYSTEM} service '${run_service}'" && \
+            log info "Installed ${INIT_SYSTEM} service '${run_service}'"
 
     # Install a runit's log service
     Install "" "${log_service}" root:root 0755 \
         "Installed runit log service '${log_service}'" || \
-            log error "Failed to install ${INIT_SYSTEM} log service"
+            log error "Failed to install ${INIT_SYSTEM} log service '${log_service}'"
 
     # Fill with content
     sudo tee "${log_service}" &>/dev/null << EOF
@@ -809,10 +822,16 @@ function InstallRunitService() {
 exec vlogger -t ${SERVICE_NAME} -p daemon
 
 EOF
+
+    # Post install check - validate log installation
+    require_file "${log_service}" error \
+        "Failed to install ${INIT_SYSTEM} log service '${log_service}'" && \
+            log info "Installed ${INIT_SYSTEM} log service '${log_service}'"
 }
 
 # Disable and remove systemd service from system
 function UninstallSystemdService() {
+
     if systemctl is-active --quiet "${SERVICE_NAME}"; then
         sudo systemctl stop "${SERVICE_NAME}" || log warning "Failed to stop service."
     fi
@@ -973,7 +992,7 @@ function CheckServiceStatus() {
 function InitialSetup() {
     local -i should_init=${1} show_usage=${2}
     if ! is_flag_enabled "$should_init"; then
-        log error "Maybe first-time set up - Use --init for initial setup" || true
+        log error "use '${PROGRAM_NAME} --init --install' for initial setup" || true
         is_flag_enabled "$show_usage" && Usage
         return 1
     fi
@@ -1009,8 +1028,9 @@ function main() {
                 should_init=0 override_no_color=0 \
                     override_color=0 p=0 a=0
 
-    local ryzenadj_path_override="" custom_args=""
-    local service_name_override="" default_profile_override=""
+    local ryzenadj_path_override="" custom_args="" \
+        service_name_override="" worker_name_override="" \
+        default_profile_override=""
     local exceptions="--custom-args"
 
     # Argument parser
@@ -1027,6 +1047,7 @@ function main() {
         case "${arg}" in
             -a|--apply)          apply_profile=1                            ;;
             -n|--service*)       service_name_override="${value}"           ;;
+            -w|--worker*)        worker_name_override="${value}"            ;;
             -s|--set)            set_enabled=1                              ;;
             -p|--profile)        default_profile_override="${value}" p=1    ;;
             -l|--list*|-show*)   should_list_profiles=1                     ;;
@@ -1058,6 +1079,17 @@ function main() {
     [[ ${#@} -eq 0 ]] && \
         log error "Not sure what to do? use --help I'll tell you everything."
 
+    # Initial setup: if config directory does not exist
+    if ! require_dir "${D_CONFIG_DIR:-}"; then
+        InitialSetup "$should_init" "$show_usage" || return 1
+    fi
+
+    if ! require_file "${F_CONFIG_FILE:-}"; then
+        log warn "config not found '${F_CONFIG_FILE:-}', creating default"
+        # Generate default config if it does not exist
+        require_file "${F_CONFIG_FILE:-}" || WriteDefaultConfig
+    fi
+
     # shellcheck disable=SC1090
     source "${F_CONFIG_FILE:-}"
 
@@ -1066,6 +1098,7 @@ function main() {
     require_var "${CURRENT_PROFILE:-}" && POWER_PROFILE="${CURRENT_PROFILE}"
     require_var "${default_profile_override}" && POWER_PROFILE="${default_profile_override}"
     require_var "${service_name_override}" && SERVICE_NAME="${service_name_override}"
+    require_var "${worker_name_override}" && WORKER_NAME="${worker_name_override}"
     is_flag_enabled "$override_no_color" && NO_COLOR=1
     is_flag_enabled "$override_color" && NO_COLOR=0
 
@@ -1073,17 +1106,21 @@ function main() {
     if command -v "systemctl" &> /dev/null; then
         INIT_SYSTEM="systemd"
         SERVICE_DIR="/etc/systemd/system"
-        POSIX_SCRIPT="/usr/local/bin/${PROGRAM_NAME}"
+        POSIX_SCRIPT="/usr/local/bin/${PROGRAM_NAME}d"
     elif command -v "runit" &> /dev/null; then
         INIT_SYSTEM="runit"
         SERVICE_DIR="/etc/sv"
-        POSIX_SCRIPT="${SERVICE_DIR}/${SERVICE_NAME}/run"
+        # POSIX_SCRIPT="${SERVICE_DIR}/${SERVICE_NAME}/run"
+        POSIX_SCRIPT="/usr/local/bin/${PROGRAM_NAME}d"
     else
         INIT_SYSTEM="Unknown"
     fi
 
     # First message
     log info "Init system: '${INIT_SYSTEM}'"
+
+    # Show usage early
+    is_flag_enabled "$show_usage" && Usage
 
     # Check ryzenadj existance
     CheckRyzenadjExistance
@@ -1093,12 +1130,6 @@ function main() {
 
     # Check for POSIX '/bin/sh' symlink
     Check_SH
-
-    # Initial setup: if config directory does not exist
-    require_dir "${D_CONFIG_DIR:-}" || InitialSetup "$should_init" "$show_usage"
-
-    # Generate default config if it does not exist
-    require_file "${F_CONFIG_FILE:-}" || WriteDefaultConfig
 
     # Fallback service name if no SERVICE_NAME found in config
     require_var "${SERVICE_NAME:-}" || SERVICE_NAME="${PROGRAM_NAME}"
@@ -1121,9 +1152,6 @@ function main() {
 
     # Dynamically generate profiles
     is_flag_enabled "$gen_profiles" && GenerateRyzenProfiles
-
-    # Show usage early
-    is_flag_enabled "$show_usage" && Usage
 
     # Show active profile
     is_flag_enabled "$show_status" && ShowActive
