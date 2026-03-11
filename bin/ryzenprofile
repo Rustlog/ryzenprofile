@@ -258,7 +258,7 @@ function InstallPosixScript() {
 
     # Fill with content
     sudo tee "${install_path}" &>/dev/null << EOF
-#!/bin/env sh
+#!/bin/sh
 
 exec 2>&1
 
@@ -267,7 +267,7 @@ make_worker() {
     mode="\${2:-0755}"
     owners="\${3:-root:root}"
     cat > "\${script_name}" << EOF__
-#!/bin/env sh
+#!/bin/sh
 
 PROFILE="\\\${0##*/}"
 PROFILE="\\\$(printf '%s\\\\n' "\\\$PROFILE" | grep -o "(.*)" | sed -e 's/[\\(\\)]//g')"
@@ -1001,12 +1001,12 @@ function InitialSetup() {
     WriteDefaultConfig
 }
 
-# Create symlink '/usr/bin/sh' if sh doesn't exist
+# Create symlink '/bin/sh' if sh doesn't exist
 function Check_SH() {
     local sh_shell=""
     command -v sh &> /dev/null && return 0
     create_symlink() {
-        local src="${1}" target="${2:-/usr/bin/sh}"
+        local src="${1}" target="${2:-/bin/sh}"
         sudo mkdir -p "${target%/*}"
         sudo ln -svf "${src}" "${target}" || \
             log error "Failed to create symlink: '${src}' -> '${target}'"
